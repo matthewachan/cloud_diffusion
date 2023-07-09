@@ -18,20 +18,14 @@ This codebase contains an implementation of a deep diffusion model applied to cl
 
 ## Usage
 
-To train the model, run `python train.py`. You can play with the parameters on top of the file to change the model architecture, training parameters, etc.
+To download the dataset, run `python scripts/dl_dataset.py --dl_dir <DIR>`.
+
+To train the model, run `python train.py`. You can play with the training parameters in `train.py` to change the model architecture, training parameters, etc.
 
 You can also override the configuration parameters by passing them as command-line arguments, e.g.
 
 ```bash
 > python train.py --epochs=10 --batch_size=32
-```
-
-## Training a Simple Diffusion Model
-
-This training is based on a Transformer based Unet (UViT), you can train the default model by running:
-
-```bash
-> python train_uvit.py
 ```
 
 ## Running Inference
