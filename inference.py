@@ -148,7 +148,7 @@ class Inference:
         "Create a table with the ground truth and the generated frames. Log it to wandb."
         table = wandb.Table(
             columns=[
-                "date",
+                "date (utc)",
                 *[f"mse_{i}" for i in range(config.num_random_experiments)],
                 "gt",
                 *[f"gen_{i}" for i in range(config.num_random_experiments)],
@@ -175,9 +175,13 @@ class Inference:
                 make_imgs(self.valid_ds[idx : idx + 4 + config.future_frames, 0, ...])
             ).long()
             pred_imgs = [torch.from_numpy(make_imgs(frames[i])) for frames in sequences]
+
+            # Compute MSE loss for each predicted frame
+            a = self.valid_ds[idx : idx + 4 + config.future_frames, 0, ...]
+            bs = [frames[i] for frames in sequences]
             loss = [
                 np.array2string(
-                    torch.sum(self.loss_func(gt_imgs, pred_img), dim=(1, 2, 3))
+                    torch.sum(self.loss_func(a, b), dim=(-1, -2))
                     .detach()
                     .cpu()
                     .numpy()[4:],
@@ -185,10 +189,12 @@ class Inference:
                     separator=",",
                     suppress_small=True,
                 )
-                for pred_img in pred_imgs
+                for b in bs
             ]
+
             gt_gen = wandb.Image(vhtile(gt_imgs, *pred_imgs))
-            table.add_data(self.dates[idx], *loss, gt_vid, *pred_vids, gt_gen)
+            datetime = np.datetime_as_string(self.dates[idx], timezone="UTC")
+            table.add_data(datetime, *loss, gt_vid, *pred_vids, gt_gen)
         logger.info("Logging results to wandb...")
         wandb.log({f"gen_table_{config.future_frames}_random": table})
 
