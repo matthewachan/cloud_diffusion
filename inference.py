@@ -15,7 +15,8 @@ from paint.standard2 import cm_tmp
 from toolbox import EasyMap, pc
 
 from cloud_diffusion.ddpm import ddim_sampler
-from cloud_diffusion.models import UNet2D, get_unet_params
+from cloud_diffusion.models import UNet2D, UViTModel, get_unet_params, get_uvit_params
+from cloud_diffusion.simple_diffusion import simple_diffusion_sampler
 from cloud_diffusion.utils import MAX_TEMP, MIN_TEMP, parse_args, rescale, set_seed
 from cloud_diffusion.wandb import vhtile
 
@@ -25,22 +26,19 @@ logger.setLevel(logging.INFO)
 
 PROJECT_NAME = "ddpm_clouds"
 JOB_TYPE = "inference"
-# East coast model
-MODEL_ARTIFACT = "matthewachan/ddpm_clouds/69edc463_unet_small:v0"  # small model
-# West coast model
-MODEL_ARTIFACT = "matthewachan/ddpm_clouds/selw4oaq_unet_small:v0"  # small model
+MODEL_ARTIFACT = "matthewachan/ddpm_clouds/qfcbmtdy_uvit_small:v0"
 
 config = SimpleNamespace(
-    model_name="unet_small",  # model name to save [unet_small, unet_big]
+    model_name="uvit_small",  # model name to save [unet_small, unet_big]
     region="west",  # east or west
-    sampler_steps=333,  # number of sampler steps on the diffusion process
+    sampler_steps=500,  # number of sampler steps on the diffusion process
     num_frames=4,  # number of frames to use as input,
-    img_size=256,  # image size to use
-    num_random_experiments=12,  # we will perform inference multiple times on the same inputs
+    img_size=512,  # image size to use
+    num_random_experiments=50,  # we will perform inference multiple times on the same inputs
     seed=33,
     device="cuda" if torch.cuda.is_available() else "cpu",
     sampler="ddim",
-    future_frames=4,  # number of future frames
+    future_frames=8,  # number of future frames
     bs=1,  # how many samples
 )
 
@@ -59,17 +57,23 @@ class Inference:
         # create a batch of data to use for inference
         self.prepare_data()
 
-        # we default to ddim as it's faster and as good as ddpm
-        self.sampler = ddim_sampler(config.sampler_steps)
-
         # create the Unet
-        model_params = get_unet_params(config.model_name, config.num_frames)
+        if config.model_name in ["uvit_small", "uvit_big"]:
+            model_params = get_uvit_params(config.model_name, config.num_frames)
+            self.model = UViTModel.from_artifact(model_params, MODEL_ARTIFACT).to(
+                config.device
+            )
+            self.sampler = simple_diffusion_sampler(config.sampler_steps)
+        elif config.model_name in ["unet_small", "unet_big"]:
+            model_params = get_unet_params(config.model_name, config.num_frames)
+            self.model = UNet2D.from_artifact(model_params, MODEL_ARTIFACT).to(
+                config.device
+            )
+            # we default to ddim as it's faster and as good as ddpm
+            self.sampler = ddim_sampler(config.sampler_steps)
 
         logger.info(
             f"Loading model {config.model_name} from artifact: {MODEL_ARTIFACT}"
-        )
-        self.model = UNet2D.from_artifact(model_params, MODEL_ARTIFACT).to(
-            config.device
         )
 
         self.loss_func = torch.nn.MSELoss(reduction="none")
@@ -80,8 +84,8 @@ class Inference:
         "Generates a batch of data from the validation dataset"
 
         # Download HRRR data for inference
-        start = pd.to_datetime("2022-12-21")
-        end = pd.to_datetime("2022-12-25")
+        start = pd.to_datetime("2023-07-11 12:00:00")
+        end = pd.to_datetime("2023-07-14")
         three_days = pd.date_range(start=start, end=end, freq="4H")
         dl_dir = "/fs/nexus-scratch/mattchan/datasets/hrrr"
         ds = FastHerbie(
@@ -89,7 +93,7 @@ class Inference:
         ).xarray("TMP:2 m")
 
         # Crop the data to the region of interest
-        tfm = T.Resize((256, 256), antialias=True)
+        tfm = T.Resize((self.config.img_size, self.config.img_size), antialias=True)
         if self.config.region == "east":
             data = ds.t2m[:, :1024, -1024:].to_numpy()
             fmt = lambda x: tfm(
@@ -114,11 +118,11 @@ class Inference:
         self.lat = fmt(ds.latitude)
         self.long = fmt(ds.longitude)
         self.valid_ds = wds
-        self.idxs = random.choices(
-            range(len(self.valid_ds) - 4 - config.future_frames), k=config.bs
-        )  # select some samples
+        # self.idxs = random.choices(
+        #     range(len(self.valid_ds) - 4 - config.future_frames), k=config.bs
+        # )  # select some samples
+        self.idxs = [0]
         self.batch = self.valid_ds[self.idxs].to(config.device)
-        print(self.idxs)
 
     def sample_more(self, frames, future_frames=1):
         "Autoregressive sampling, starting from `frames`. It is hardcoded to work with 3 frame inputs."
@@ -167,6 +171,19 @@ class Inference:
             return wandb.Video(imgs)
 
         for i, idx in enumerate(self.idxs):
+            # Save predictions
+            pred_imgs = np.array(
+                [frames[i].detach().cpu().numpy() for frames in sequences]
+            )
+            np.save("out/pred.npy", pred_imgs)
+            gt_imgs = (
+                self.valid_ds[idx : idx + 4 + config.future_frames, 0, ...]
+                .detach()
+                .cpu()
+                .numpy()
+            )
+            np.save("out/gt.npy", pred_imgs)
+
             gt_vid = make_vid(
                 self.valid_ds[idx : idx + 4 + config.future_frames, 0, ...]
             )

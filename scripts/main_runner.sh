@@ -45,8 +45,8 @@ echo "Loaded modules are:"
 module list
 
 # python /fs/nexus-scratch/mattchan/pytorch-boilerplate/train.py -b 16 -e 100 -s 256
-# python /fs/nexus-scratch/mattchan/cloud_diffusion/inference.py
-python /fs/nexus-scratch/mattchan/hrrr-diffusion/train_uvit.py
+python /fs/nexus-scratch/mattchan/hrrr-diffusion/inference.py
+# python /fs/nexus-scratch/mattchan/hrrr-diffusion/train_uvit.py --epochs 200
 # python /fs/nexus-scratch/mattchan/cloud_diffusion/train.py --batch_size=32 --img_size=256
 
 # Save the exit code from the previous command
