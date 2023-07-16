@@ -1,6 +1,7 @@
 import io
 import logging
 import random
+import os
 from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
@@ -38,7 +39,7 @@ config = SimpleNamespace(
     seed=33,
     device="cuda" if torch.cuda.is_available() else "cpu",
     sampler="ddim",
-    future_frames=8,  # number of future frames
+    future_frames=6,  # number of future frames
     bs=1,  # how many samples
 )
 
@@ -60,17 +61,18 @@ class Inference:
         # create the Unet
         if config.model_name in ["uvit_small", "uvit_big"]:
             model_params = get_uvit_params(config.model_name, config.num_frames)
-            self.model = UViTModel.from_artifact(model_params, MODEL_ARTIFACT).to(
-                config.device
-            )
+            self.model = UViTModel.from_artifact(model_params, MODEL_ARTIFACT)
             self.sampler = simple_diffusion_sampler(config.sampler_steps)
         elif config.model_name in ["unet_small", "unet_big"]:
             model_params = get_unet_params(config.model_name, config.num_frames)
-            self.model = UNet2D.from_artifact(model_params, MODEL_ARTIFACT).to(
-                config.device
-            )
+            self.model = UNet2D.from_artifact(model_params, MODEL_ARTIFACT)
             # we default to ddim as it's faster and as good as ddpm
             self.sampler = ddim_sampler(config.sampler_steps)
+
+        if torch.cuda.device_count() > 1:
+            print("Let's use", torch.cuda.device_count(), "GPUs!")
+            self.model = torch.nn.DataParallel(self.model)
+        self.model = self.model.to(config.device)
 
         logger.info(
             f"Loading model {config.model_name} from artifact: {MODEL_ARTIFACT}"
@@ -84,6 +86,7 @@ class Inference:
         "Generates a batch of data from the validation dataset"
 
         # Download HRRR data for inference
+        # Last (aka 3rd) input frame is at 07/12/23 00:00:00
         start = pd.to_datetime("2023-07-11 12:00:00")
         end = pd.to_datetime("2023-07-14")
         three_days = pd.date_range(start=start, end=end, freq="4H")
@@ -123,6 +126,9 @@ class Inference:
         # )  # select some samples
         self.idxs = [0]
         self.batch = self.valid_ds[self.idxs].to(config.device)
+        self.batch = self.batch.repeat(config.num_random_experiments, 1, 1, 1)
+        print("Batch size", self.batch.shape)
+        # ([1, 4, 512, 512])
 
     def sample_more(self, frames, future_frames=1):
         "Autoregressive sampling, starting from `frames`. It is hardcoded to work with 3 frame inputs."
@@ -131,6 +137,9 @@ class Inference:
             new_frame = self.sampler(self.model, frames[:, -3:, ...])
             # add new frame to the sequence
             frames = torch.cat([frames, new_frame.to(frames.device)], dim=1)
+        # compare = self.valid_ds[:3, 0, ...].detach().cpu()
+        # result = torch.all(torch.isclose(frames[:, :3, ...].detach().cpu(), compare))
+        # print("ASDF", compare.shape, result)
         return frames.cpu()
 
     def forecast(self):
@@ -138,13 +147,16 @@ class Inference:
         logger.info(
             f"Forecasting {self.batch.shape[0]} samples for {self.config.future_frames} future frames."
         )
-        sequences = []
-        for i in range(self.config.num_random_experiments):
-            logger.info(
-                f"Generating {i+1}/{self.config.num_random_experiments} futures."
-            )
-            frames = self.sample_more(self.batch, self.config.future_frames)
-            sequences.append(frames)
+        # sequences = []
+        # for i in range(self.config.num_random_experiments):
+        #     logger.info(
+        #         f"Generating {i+1}/{self.config.num_random_experiments} futures."
+        #     )
+        #     frames = self.sample_more(self.batch, self.config.future_frames)
+        #     sequences.append(frames)
+        logger.info(f"Generating {self.config.num_random_experiments} futures.")
+        frames = self.sample_more(self.batch, self.config.future_frames)
+        sequences = frames.unsqueeze(1)
 
         return sequences
 
@@ -153,12 +165,22 @@ class Inference:
         table = wandb.Table(
             columns=[
                 "date (utc)",
-                *[f"mse_{i}" for i in range(config.num_random_experiments)],
+                # *[f"mse_{i}" for i in range(config.num_random_experiments)],
                 "gt",
                 *[f"gen_{i}" for i in range(config.num_random_experiments)],
                 "gt/gen",
             ]
         )
+
+        def k_to_f(k):
+            return (k - 273.15) * (9 / 5) + 32
+
+        def convert_to_f(temp):
+            # Renormalize temperature values to Kelvin
+            temp = (0.5 - temp) * (MAX_TEMP - MIN_TEMP) + MIN_TEMP
+            # Convert Fahrenheit
+            temp = k_to_f(temp)
+            return temp
 
         def make_imgs(data):
             imgs = np.array(
@@ -171,18 +193,25 @@ class Inference:
             return wandb.Video(imgs)
 
         for i, idx in enumerate(self.idxs):
+            # Conver ground truth and predictions to Fahrenheit
+            sequences = convert_to_f(sequences)
+            self.valid_ds[idx : idx + 4 + config.future_frames, 0, ...] = convert_to_f(
+                self.valid_ds[idx : idx + 4 + config.future_frames, 0, ...]
+            )
+
             # Save predictions
             pred_imgs = np.array(
                 [frames[i].detach().cpu().numpy() for frames in sequences]
             )
-            np.save("out/pred.npy", pred_imgs)
+            target_dir = "/fs/nexus-scratch/mattchan/hrrr-diffusion"
+            np.save(os.path.join(target_dir, "out/pred.npy"), pred_imgs)
             gt_imgs = (
                 self.valid_ds[idx : idx + 4 + config.future_frames, 0, ...]
                 .detach()
                 .cpu()
                 .numpy()
             )
-            np.save("out/gt.npy", pred_imgs)
+            np.save(os.path.join(target_dir, "out/gt.npy"), gt_imgs)
 
             gt_vid = make_vid(
                 self.valid_ds[idx : idx + 4 + config.future_frames, 0, ...]
@@ -211,20 +240,13 @@ class Inference:
 
             gt_gen = wandb.Image(vhtile(gt_imgs, *pred_imgs))
             datetime = np.datetime_as_string(self.dates[idx], timezone="UTC")
-            table.add_data(datetime, *loss, gt_vid, *pred_vids, gt_gen)
+            table.add_data(datetime, gt_vid, *pred_vids, gt_gen)
+            # table.add_data(datetime, *loss, gt_vid, *pred_vids, gt_gen)
         logger.info("Logging results to wandb...")
         wandb.log({f"gen_table_{config.future_frames}_random": table})
 
 
 def visualize(temp, lat, long, proj):
-    def k_to_f(k):
-        return (k - 273.15) * (9 / 5) + 32
-
-    # Renormalize temperatuer values to Kelvin
-    temp = (0.5 - temp) * (MAX_TEMP - MIN_TEMP) + MIN_TEMP
-    # Convert Fahrenheit
-    temp = k_to_f(temp)
-
     # Create plot of the US
     fig = plt.figure()
     ax = plt.axes(projection=proj)
