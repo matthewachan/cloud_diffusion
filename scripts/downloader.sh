@@ -7,17 +7,14 @@
 #
 # Slurm sbatch parameters section:
 #	Request walltime
-#SBATCH --time=44:00:00
+#SBATCH --time=12:00:00
 #	Request 1 GB of memory per CPU core
-#SBATCH --mem-per-cpu=8gb
+#SBATCH --mem-per-cpu=1gb
 #	Allow other jobs to run on same node
 #SBATCH --oversubscribe
-##SBATCH --qos=high
-#SBATCH --partition=scavenger
-#SBATCH --account=scavenger
+#SBATCH --qos=high
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:rtxa5000:4
+#SBATCH --cpus-per-task=16
 #SBATCH -o /fs/nexus-scratch/mattchan/hrrr-diffusion/logs/slurm-%j.txt
 
 # This job will run our hello-umd demo binary in sequential mode
@@ -41,18 +38,14 @@ free -h
 echo "All nodes: ${SLURM_JOB_NODELIST}"
 date
 pwd
-# echo "Loaded modules are:"
-# module list
+echo "Loaded modules are:"
+module list
 
-# python /fs/nexus-scratch/mattchan/hrrr-diffusion/inference.py
-# python /fs/nexus-scratch/mattchan/hrrr-diffusion/train_uvit.py
-python /fs/nexus-scratch/mattchan/hrrr-diffusion/train.py
+python /fs/nexus-scratch/mattchan/hrrr-diffusion/scripts/dl_era5.py
+# python /fs/nexus-scratch/mattchan/hrrr-diffusion/train_uvit.py --epochs 200
 
 # Save the exit code from the previous command
 ECODE=$?
-
-# Copy results back to submit dir
-# cp bird_image.jpg ${SLURM_SUBMIT_DIR}
 
 echo "Job finished with exit code $ECODE"
 date

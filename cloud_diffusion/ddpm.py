@@ -34,7 +34,7 @@ def diffusers_sampler(model, past_frames, sched, **kwargs):
     pbar = progress_bar(sched.timesteps, leave=False)
     for t in pbar:
         pbar.comment = f"DDIM Sampler: frame {t}"
-        noise = model(torch.cat([past_frames, new_frame], dim=1), t)
+        noise = model(torch.cat([past_frames, new_frame], dim=1), t.repeat(len(past_frames)).to(device))
         new_frame = sched.step(noise, t, new_frame, **kwargs).prev_sample
         preds.append(new_frame.float().cpu())
     return preds[-1]

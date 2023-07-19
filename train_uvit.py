@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import torch
 import wandb
-from dataset import TemperatureDataset
+from dataset import TemperatureDataset, Era5Land
 from torch.utils.data import Subset
 
 from cloud_diffusion.models import UViT, get_uvit_params
@@ -13,15 +13,14 @@ DEBUG = True
 PROJECT_NAME = "ddpm_clouds"
 
 config = SimpleNamespace(
-    epochs=100,  # number of epochs
+    epochs=50,  # number of epochs
     model_name="uvit_small",  # model name to save
-    dir="/fs/nexus-scratch/mattchan/datasets/hrrr-west",  # directory of dataset
-    region="west",  # region of dataset [west, east]
+    dir="/fs/nexus-scratch/mattchan/datasets/era5-land",  # directory of dataset
     strategy="simple_diffusion",  # strategy to use [ddpm, simple_diffusion]
     noise_steps=1000,  # number of noise steps on the diffusion process
-    sampler_steps=500,  # number of sampler steps on the diffusion process
+    sampler_steps=333,  # number of sampler steps on the diffusion process
     seed=42,  # random seed
-    batch_size=6,  # batch size
+    batch_size=8,  # batch size
     img_size=512,  # image size
     device="cuda",  # device
     num_workers=8,  # number of workers for dataloader
@@ -47,7 +46,8 @@ def train_func(config):
     set_seed(config.seed)
     device = torch.device(config.device)
 
-    ds = TemperatureDataset(config.dir, config.img_size)
+    # ds = TemperatureDataset(config.dir, config.img_size)
+    ds = Era5Land(config.dir, config.img_size, config.num_frames)
     train_ds = Subset(ds, range(int(len(ds) * 0.8)))
     valid_ds = Subset(ds, range(int(len(ds) * 0.8), len(ds)))
 
@@ -68,6 +68,11 @@ def train_func(config):
     )
     # model setup
     model = UViT(**config.model_params)
+    if torch.cuda.device_count() > 1:
+        print("Let's use", torch.cuda.device_count(), "GPUs!")
+        model = torch.nn.DataParallel(model)
+    model = model.to(config.device)
+    # Compute model size
     param_size = 0
     for param in model.parameters():
         param_size += param.nelement() * param.element_size()
@@ -91,6 +96,6 @@ if __name__ == "__main__":
     with wandb.init(
         project=PROJECT_NAME,
         config=config,
-        tags=["train", config.region, config.model_name],
+        tags=["train", config.model_name],
     ):
         train_func(config)

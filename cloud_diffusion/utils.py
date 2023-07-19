@@ -17,6 +17,8 @@ from cloud_diffusion.wandb import log_images, save_model
 # Min and max US temperatures in Kelvin
 MIN_TEMP = 216
 MAX_TEMP = 330
+# fahrenheit
+# MIN_TEMP = -80 MAX_TEMP = 134
 
 
 def noisify_last_frame(frames, noise_func):
@@ -82,6 +84,7 @@ class MiniTrainer:
         pbar = progress_bar(self.train_dataloader, leave=False)
         for batch in pbar:
             frames, t, noise = to_device(batch, device=self.device)
+            # torch.Size([8, 4, 64, 64]) torch.Size([8]) torch.Size([8, 1, 64, 64])
             with torch.autocast("cuda"):
                 predicted_noise = self.model(frames, t)
                 loss = self.loss_func(noise, predicted_noise)
@@ -107,6 +110,7 @@ class MiniTrainer:
         self.val_batch = self.val_batch[
             : min(config.n_preds, 8)
         ]  # log first 8 predictions
+        min_loss = np.inf
         for epoch in progress_bar(
             range(config.epochs), total=config.epochs, leave=True
         ):
@@ -116,6 +120,12 @@ class MiniTrainer:
             if epoch % config.log_every_epoch == 0:
                 samples = self.sampler(self.model, past_frames=self.val_batch[:, :-1])
                 log_images(self.val_batch, samples)
+                gt = self.val_batch[:, -1:]
+                pred = samples[:, -1:]
+                loss = torch.nn.functional.mse_loss(gt, pred)
+                if loss < min_loss:
+                    min_loss = loss
+                    save_model(self.model, config.model_name + "_best")
 
         save_model(self.model, config.model_name)
 
